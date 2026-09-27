@@ -1,0 +1,18 @@
+--- a/vllm/v1/worker/gpu/spec_decode/eagle/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/eagle/utils.py
+@@ -49,8 +49,13 @@
+         target_embed = target_embed.base_layer
+     draft_embed = getattr(draft_inner, "embed_tokens", None)
+ 
+-    if get_pp_group().world_size > 1 and not hasattr(
+-        draft_model, "has_own_embed_tokens"
++    # LOCAL PATCH: under PP an MTP draft only keeps its own embedding when the
++    # target's is a PPMissingLayer on this stage. Qwen3.5 builds and loads
++    # embed_tokens on every stage, so the last stage can share it (-2.37 GiB).
++    if (
++        get_pp_group().world_size > 1
++        and not hasattr(draft_model, "has_own_embed_tokens")
++        and target_embed is None
+     ):
+         return
+ 

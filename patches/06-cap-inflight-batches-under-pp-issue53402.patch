@@ -1,0 +1,14 @@
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -592,7 +592,10 @@
+         pp_size = self.parallel_config.pipeline_parallel_size
+         if self.scheduler_config.async_scheduling:
+             if self.use_v2_model_runner:
+-                return pp_size + 1
++                # LOCAL PATCH (vllm #53402): pp_size + 1 in-flight batches let PP
++                # receivers post the draft broadcast one step ahead of the last
++                # rank and deadlock MTP+PP prefills. Cap at pp_size under PP.
++                return pp_size if pp_size > 1 else 2
+             # V1 Model Runner does not fully support async scheduling with PP.
+             if pp_size <= 1:
+                 return 2

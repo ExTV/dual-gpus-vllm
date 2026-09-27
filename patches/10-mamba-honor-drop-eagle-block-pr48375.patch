@@ -1,0 +1,15 @@
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -1537,6 +1537,12 @@
+             return computed_blocks, hit_length
+ 
+         max_num_blocks = max_length // block_size
++        if drop_eagle_block and max_num_blocks > 0:
++            # LOCAL PATCH (vllm#48375, from club-3090): EAGLE/MTP/DFlash drop the
++            # final matched page; its recurrent-state snapshot may reflect draft
++            # tokens that verification later rejected. Lower the search ceiling
++            # by one page instead of popping (a pop would delete the state block).
++            max_num_blocks -= 1
+         # Search from right to left and early stop when a match is found.
+         for i in range(max_num_blocks - 1, -1, -1):
+             if cached_block := block_pool.get_cached_block(

@@ -1,0 +1,43 @@
+--- a/vllm/model_executor/models/qwen3_dflash.py
++++ b/vllm/model_executor/models/qwen3_dflash.py
+@@ -356,6 +356,31 @@
+         return hidden_states, residual
+ 
+ 
++def _dense_kv_rows(attn: nn.Module) -> torch.Tensor:
++    """LOCAL PATCH (vllm#51581, from club-3090): rows [q_size:] of qkv_proj as a
++    dense matrix. Runs from load_weights, before the Marlin repack, so a
++    compressed-tensors pack-quantized (symmetric, group) weight is still in the
++    checkpoint layout and is dequantized here; a dense 2-D .weight takes the stock path.
++    """
++    qkv = attn.qkv_proj
++    w = getattr(qkv, "weight", None)
++    if w is not None and w.dim() == 2:
++        return w[attn.q_size :]
++    packed, scale = qkv.weight_packed, qkv.weight_scale
++    out_f, in_f = int(packed.shape[0]), int(qkv.input_size)
++    bits = 32 * packed.shape[1] // in_f
++    from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32
++
++    q = unpack_from_int32(packed.data, bits, torch.Size([out_f, in_f]), packed_dim=1)
++    group = in_f // scale.shape[1]
++    dense = (
++        q.to(torch.float32).reshape(out_f, in_f // group, group)
++        * scale.to(torch.float32)[..., None]
++    ).reshape(out_f, in_f)
++    out_dtype = scale.dtype if scale.dtype.is_floating_point else torch.bfloat16
++    return dense.to(out_dtype)[attn.q_size :]
++
++
+ @support_torch_compile
+ class DFlashQwen3Model(nn.Module):
+     decoder_layer_cls = DFlashQwen3DecoderLayer
+@@ -470,7 +495,7 @@
+         self._hidden_norm_weight = self.hidden_norm.weight.data
+ 
+         # KV projection weights: [num_layers * 2 * kv_size, hidden_size]
+-        kv_weights = [a.qkv_proj.weight[a.q_size :] for a in layers_attn]
++        kv_weights = [_dense_kv_rows(a) for a in layers_attn]  # LOCAL PATCH (vllm#51581)
+         self._fused_kv_weight = torch.cat(kv_weights, dim=0)
+         if has_bias:
+             kv_biases = [a.qkv_proj.bias[a.q_size :] for a in layers_attn]

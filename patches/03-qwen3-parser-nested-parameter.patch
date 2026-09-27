@@ -1,0 +1,61 @@
+--- a/vllm/parser/qwen3.py
++++ b/vllm/parser/qwen3.py
+@@ -48,13 +48,33 @@
+ PARAM_START = "<parameter="
+ PARAM_END = "</parameter>"
+ 
++# LOCAL PATCH (2026-08-27, not upstream): a parameter value may itself contain
++# literal <parameter=...>...</parameter> markup (editing a chat template,
++# documenting the tool format). The stock regex ended a value at the next
++# "<parameter=" and accepted any "</parameter>", so such values came back
++# truncated and their nested tag names became phantom arguments. A closer now
++# counts only when the next structural tag follows it (or, in the final pass,
++# the end of the arguments). In the partial pass a closer at the very end is
++# undecided: the value is streamed without it, which is a prefix of either
++# outcome. Trade-off: a parameter that omits its closer is no longer
++# recovered from the next "<parameter=" (well-formed nesting wins).
++_STRUCTURAL_AFTER = r"\s*(?:<\s*parameter\s*=|<\s*/\s*function\b|<\s*/\s*tool_call\b)"
+ _PARAM_RE = re.compile(
+     r"<\s*parameter\s*=\s*([^>]*)>"
+     r"(.*?)"
+-    r"(?:<\s*/\s*parameter\s*>|(?=<\s*parameter\s*=))",
++    r"<\s*/\s*parameter\s*>"
++    r"(?=" + _STRUCTURAL_AFTER + r"|\s*\Z)",
++    re.DOTALL,
++)
++_PARAM_RE_PARTIAL = re.compile(
++    r"<\s*parameter\s*=\s*([^>]*)>"
++    r"(.*?)"
++    r"<\s*/\s*parameter\s*>"
++    r"(?=" + _STRUCTURAL_AFTER + r")",
+     re.DOTALL,
+ )
+ _PARTIAL_PARAM_RE = re.compile(r"<\s*parameter\s*=\s*([^>]+)>(.*)$", re.DOTALL)
++_TRAILING_CLOSER_RE = re.compile(r"<\s*/\s*parameter\s*>\s*\Z")
+ 
+ 
+ def _trim_wrapping_newlines(value: str) -> str:
+@@ -68,18 +88,20 @@
+ 
+ def _qwen3_arg_converter(raw_args: str, partial: bool) -> str:
+     params: dict[str, object] = {}
++    param_re = _PARAM_RE_PARTIAL if partial else _PARAM_RE
+ 
+-    for match in _PARAM_RE.finditer(raw_args):
++    for match in param_re.finditer(raw_args):
+         name = match.group(1)
+         value = match.group(2)
+         params[name] = _trim_wrapping_newlines(value)
+ 
+     if partial:
+-        remaining = _PARAM_RE.sub("", raw_args)
++        remaining = param_re.sub("", raw_args)
+         m = _PARTIAL_PARAM_RE.search(remaining)
+         if m:
+             name = m.group(1)
+-            value = m.group(2)
++            # A closer right at the end may still be nested content (LOCAL PATCH).
++            value = _TRAILING_CLOSER_RE.sub("", m.group(2))
+             if name:
+                 params[name] = _trim_wrapping_newlines(value)
+ 
