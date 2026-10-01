@@ -1,3 +1,4 @@
 venv/
 __pycache__/
 *.orig-0.30.0
+shim/*.so

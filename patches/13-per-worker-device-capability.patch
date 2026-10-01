@@ -1,0 +1,42 @@
+--- a/vllm/platforms/cuda.py
++++ b/vllm/platforms/cuda.py
+@@ -788,9 +788,21 @@
+             return pynvml.nvmlDeviceGetIndex(handle)
+ 
+     @classmethod
++    def get_device_capability(cls, device_id: int = 0) -> DeviceCapability | None:
++        # LOCAL PATCH: per-worker device. Every PP/TP worker calls
++        # torch.cuda.set_device(local_rank), but callers of this method rely on
++        # the default device_id=0, so on a mixed box every rank selected its
++        # kernels for device 0. Resolve the default to the current device once
++        # CUDA is initialised in this process (never in the API server or
++        # EngineCore, which do not initialise CUDA).
++        if device_id == 0 and torch.cuda.is_initialized():
++            device_id = torch.cuda.current_device()
++        return cls._get_device_capability_cached(device_id)
++
++    @classmethod
+     @cache
+     @with_nvml_context
+-    def get_device_capability(cls, device_id: int = 0) -> DeviceCapability | None:
++    def _get_device_capability_cached(cls, device_id: int) -> DeviceCapability | None:
+         try:
+             physical_device_id = cls.visible_device_id_to_physical_device_id(device_id)
+             handle = pynvml.nvmlDeviceGetHandleByIndex(physical_device_id)
+@@ -1029,8 +1041,15 @@
+ 
+ class NonNvmlCudaPlatform(CudaPlatformBase):
+     @classmethod
+-    @cache
+     def get_device_capability(cls, device_id: int = 0) -> DeviceCapability:
++        # LOCAL PATCH: per-worker device (see NvmlCudaPlatform).
++        if device_id == 0 and torch.cuda.is_initialized():
++            device_id = torch.cuda.current_device()
++        return cls._get_device_capability_cached(device_id)
++
++    @classmethod
++    @cache
++    def _get_device_capability_cached(cls, device_id: int) -> DeviceCapability:
+         major, minor = torch.cuda.get_device_capability(device_id)
+         return DeviceCapability(major=major, minor=minor)
+ 
